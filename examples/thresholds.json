@@ -1,0 +1,18 @@
+{
+  "area_mm2": 0.01,
+  "area_mode": "absolute",
+  "relative_area_percent": 0.1,
+  "width_mm": 0.01,
+  "length_mm": 0.1,
+  "edge_displacement_mm": 0.01,
+  "registration_x_mm": 0.05,
+  "registration_y_mm": 0.05,
+  "registration_rotation_deg": 0.05,
+  "logic": "OR",
+  "ignore_below_threshold": true,
+  "report_ignored_separately": true,
+  "flag_types": ["ADDED_GEOMETRY", "REMOVED_GEOMETRY", "WIDTH_CHANGE", "POSITION_CHANGE", "PAD_CHANGE", "FLASH_CHANGE", "REGION_CHANGE", "SHAPE_CHANGE", "REGISTRATION_CHANGE"],
+  "critical_area_mm2": 1.0,
+  "critical_width_mm": 0.5,
+  "critical_length_mm": 5.0
+}
