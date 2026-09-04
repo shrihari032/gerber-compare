@@ -1,0 +1,95 @@
+#usage "Gerber comparison threshold configuration frontend"
+#usage "Run before the vector Boolean comparison stage. Writes comparison_thresholds.json."
+
+/* EAGLE 7.3 ULP configuration dialog. The Boolean adapter consumes the JSON
+   written here; thresholding never changes the raw A XOR B geometry. */
+real area = 0.010;
+real width = 0.010;
+real length = 0.100;
+real edge = 0.010;
+real regx = 0.050;
+real regy = 0.050;
+real rotation = 0.050;
+real relativePercent = 0.100;
+real criticalArea = 1.000;
+real criticalWidth = 0.500;
+real criticalLength = 5.000;
+int absoluteArea = 1;
+int logicOr = 1;
+int ignoreBelow = 1;
+int reportIgnored = 1;
+int added = 1, removed = 1, widthChange = 1, positionChange = 1;
+int padChange = 1, flashChange = 1, regionChange = 1, shapeChange = 1, registrationChange = 1;
+
+void defaults(void) {
+  area=0.010; width=0.010; length=0.100; edge=0.010; regx=0.050; regy=0.050; rotation=0.050;
+  relativePercent=0.100; criticalArea=1.000; criticalWidth=0.500; criticalLength=5.000;
+  absoluteArea=1; logicOr=1; ignoreBelow=1; reportIgnored=1;
+  added=removed=widthChange=positionChange=padChange=flashChange=regionChange=shapeChange=registrationChange=1;
+}
+
+void writeConfiguration(void) {
+  string file = "comparison_thresholds.json";
+  output(file, "wt") {
+    printf("{\n");
+    printf("  \"area_mm2\": %.9f,\n", area);
+    printf("  \"area_mode\": \"%s\",\n", absoluteArea ? "absolute" : "relative");
+    printf("  \"relative_area_percent\": %.9f,\n", relativePercent);
+    printf("  \"width_mm\": %.9f,\n  \"length_mm\": %.9f,\n", width, length);
+    printf("  \"edge_displacement_mm\": %.9f,\n", edge);
+    printf("  \"registration_x_mm\": %.9f,\n  \"registration_y_mm\": %.9f,\n", regx, regy);
+    printf("  \"registration_rotation_deg\": %.9f,\n", rotation);
+    printf("  \"logic\": \"%s\",\n", logicOr ? "OR" : "AND");
+    printf("  \"ignore_below_threshold\": %s,\n", ignoreBelow ? "true" : "false");
+    printf("  \"report_ignored_separately\": %s,\n", reportIgnored ? "true" : "false");
+    printf("  \"flag_types\": [");
+    int first = 1;
+    if (added) { printf("\"ADDED_GEOMETRY\""); first=0; }
+    if (removed) { printf("%s\"REMOVED_GEOMETRY\"", first ? "" : ", "); first=0; }
+    if (widthChange) { printf("%s\"WIDTH_CHANGE\"", first ? "" : ", "); first=0; }
+    if (positionChange) { printf("%s\"POSITION_CHANGE\"", first ? "" : ", "); first=0; }
+    if (padChange) { printf("%s\"PAD_CHANGE\"", first ? "" : ", "); first=0; }
+    if (flashChange) { printf("%s\"FLASH_CHANGE\"", first ? "" : ", "); first=0; }
+    if (regionChange) { printf("%s\"REGION_CHANGE\"", first ? "" : ", "); first=0; }
+    if (shapeChange) { printf("%s\"SHAPE_CHANGE\"", first ? "" : ", "); first=0; }
+    if (registrationChange) { printf("%s\"REGISTRATION_CHANGE\"", first ? "" : ", "); }
+    printf("],\n");
+    printf("  \"critical_area_mm2\": %.9f,\n  \"critical_width_mm\": %.9f,\n  \"critical_length_mm\": %.9f\n", criticalArea, criticalWidth, criticalLength);
+    printf("}\n");
+  }
+}
+
+int result = dlgDialog("GERBER COMPARISON — DIFFERENCE THRESHOLDS") {
+  dlgLabel("DIFFERENCE THRESHOLDS");
+  dlgGroup("Geometric Difference") {
+    dlgGridLayout {
+      dlgCell(0,0) dlgLabel("Minimum Difference Area (mm²):"); dlgCell(1,0) dlgRealEdit(area);
+      dlgCell(0,1) dlgLabel("Minimum Difference Width (mm):"); dlgCell(1,1) dlgRealEdit(width);
+      dlgCell(0,2) dlgLabel("Minimum Difference Length (mm):"); dlgCell(1,2) dlgRealEdit(length);
+      dlgCell(0,3) dlgRadioButton("Absolute area", absoluteArea); dlgCell(1,3) dlgRadioButton("Relative area (%)", !absoluteArea);
+      dlgCell(0,4) dlgLabel("Relative area percent:"); dlgCell(1,4) dlgRealEdit(relativePercent);
+    }
+  }
+  dlgGroup("Registration / Alignment") { dlgGridLayout {
+    dlgCell(0,0) dlgLabel("Maximum X Offset (mm):"); dlgCell(1,0) dlgRealEdit(regx);
+    dlgCell(0,1) dlgLabel("Maximum Y Offset (mm):"); dlgCell(1,1) dlgRealEdit(regy);
+    dlgCell(0,2) dlgLabel("Maximum Rotation (deg):"); dlgCell(1,2) dlgRealEdit(rotation);
+  }}
+  dlgGroup("Edge / Dimensional Differences") { dlgGridLayout { dlgCell(0,0) dlgLabel("Minimum Edge Displacement (mm):"); dlgCell(1,0) dlgRealEdit(edge); }}
+  dlgGroup("Difference Types to Flag") { dlgGridLayout {
+    dlgCell(0,0) dlgCheckBox("Added geometry", added); dlgCell(1,0) dlgCheckBox("Removed geometry", removed);
+    dlgCell(0,1) dlgCheckBox("Trace width change", widthChange); dlgCell(1,1) dlgCheckBox("Trace displacement", positionChange);
+    dlgCell(0,2) dlgCheckBox("Pad/flash change", padChange); dlgCell(1,2) dlgCheckBox("Region change", regionChange);
+    dlgCell(0,3) dlgCheckBox("Aperture/shape change", shapeChange); dlgCell(1,3) dlgCheckBox("Registration difference", registrationChange);
+  }}
+  dlgCheckBox("Ignore differences below threshold", ignoreBelow);
+  dlgCheckBox("Report ignored differences separately", reportIgnored);
+  dlgGroup("Threshold combination and severity") { dlgGridLayout {
+    dlgCell(0,0) dlgRadioButton("OR: any criterion exceeds threshold", logicOr); dlgCell(1,0) dlgRadioButton("AND: all criteria exceed threshold", !logicOr);
+    dlgCell(0,1) dlgLabel("Critical area (mm²):"); dlgCell(1,1) dlgRealEdit(criticalArea);
+    dlgCell(0,2) dlgLabel("Critical width (mm):"); dlgCell(1,2) dlgRealEdit(criticalWidth);
+    dlgCell(0,3) dlgLabel("Critical length (mm):"); dlgCell(1,3) dlgRealEdit(criticalLength);
+  }}
+  dlgHBoxLayout { dlgPushButton("Reset Defaults") { defaults(); dlgRedisplay(); } dlgStretch(1); dlgPushButton("Cancel") dlgReject(); dlgPushButton("Compare") dlgAccept(); }
+};
+if (result) { writeConfiguration(); dlgMessageBox("Threshold configuration saved to comparison_thresholds.json\n\nRaw XOR geometry and filtered flagged differences are reported separately.", "OK"); }
