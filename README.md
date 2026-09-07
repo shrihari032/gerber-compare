@@ -65,28 +65,6 @@ two paths and optional `dx_mm`, `dy_mm`, and `rotation_deg`. The generated
 alignment, hashes, and any unsupported feature warnings. It is the source of
 truth; `*.png` files are visualizations only.
 
-#### Flagging conditions and Gerber XOR deliverables
-
-`run_comparison` exposes non-destructive review controls. For example, flag
-only manufacturer-added regions at least 0.01 mm²:
-
-```python
-from colab_runner import run_comparison
-comparison = run_comparison(
-    "original.gtl", "working.gtl",
-    min_flag_area_mm2=0.01,
-    flag_sources=("WORKING_ONLY",),
-)
-```
-
-Every detected region is retained in `raw_differences.json` and
-`difference_regions.csv` with a `FLAG` or `IGNORE` status and an explicit
-reason. `XOR_difference.gbr` is a valid millimetre RS-274X region output for
-the complete vector XOR; `XOR_difference_flagged.gbr` contains only selected
-flagged regions. `flagged_differences.png` labels each flagged area with the
-same region ID used in the detailed HTML/CSV reports. Changing the conditions
-never changes the raw XOR.
-
 ## Thresholding and audit/report stage
 
 This repository provides the **thresholding and audit/report stage** for a Gerber

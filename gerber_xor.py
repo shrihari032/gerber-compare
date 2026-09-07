@@ -70,14 +70,7 @@ def _tokens(text: str) -> Iterable[str]:
 class Parser:
     def parse(self, path: str | Path) -> ParsedGerber:
         result=ParsedGerber(str(path)); text=Path(path).read_text(encoding="utf-8", errors="replace")
-        x=y=0.0; selected=None; operation=2; interpolation=1; polarity="D"; geometry=GeometryCollection(); region=False; contours=[]; contour=[]
-        def apply(new_geometry):
-            """Apply polarity immediately: later dark objects can refill clear areas."""
-            nonlocal geometry
-            try:
-                geometry = geometry.union(new_geometry) if polarity == "D" else geometry.difference(new_geometry)
-            except Exception as exc:
-                raise GerberError(f"Boolean geometry failure while applying {polarity} polarity: {exc}") from exc
+        x=y=0.0; selected=None; operation=2; interpolation=1; polarity="D"; dark=[]; clear=[]; region=False; contours=[]; contour=[]
         for raw in _tokens(text):
             result.command_count += 1
             token=raw.strip()
@@ -106,14 +99,7 @@ class Parser:
             if "G37" in token:
                 if contour: contours.append(contour)
                 if not contours: raise GerberError("empty region")
-                # Gerber region contours are filled according to their nesting.
-                # Symmetric difference gives an even/odd fill and correctly makes
-                # an inner contour a hole without relying on winding direction.
-                geom=GeometryCollection()
-                for points in contours:
-                    if len(points) < 3: raise GerberError("region contour has fewer than three points")
-                    geom=geom.symmetric_difference(Polygon(points))
-                apply(geom); result.regions+=1; region=False; continue
+                geom=unary_union([Polygon(c) for c in contours if len(c)>=3]); (dark if polarity=="D" else clear).append(geom); result.regions+=1; region=False; continue
             g=re.search(r"G0?([123])",token)
             if g: interpolation=int(g.group(1))
             d=re.search(r"D0?([123])",token)
@@ -133,10 +119,9 @@ class Parser:
                 if not im or not jm: raise GerberError("arc missing I/J")
                 cx=x+self._coord(im,0,result); cy=y+self._coord(jm,0,result); geom=self._arc((x,y),(nx,ny),(cx,cy),interpolation==3,ap); result.arcs+=1
             else: geom=ap.stroke((x,y),(nx,ny))
-            apply(geom); x,y=nx,ny
+            (dark if polarity=="D" else clear).append(geom); x,y=nx,ny
         if not result.format or not result.units: raise GerberError("not an RS-274X Gerber: missing FS or MO")
-        if region: raise GerberError("unterminated G36 region")
-        result.geometry=self._snap(geometry)
+        result.geometry=self._snap(unary_union(dark).difference(unary_union(clear)))
         return result
 
     def _coord(self,m, previous, r):
@@ -168,3 +153,4 @@ def polygons(geometry):
     if geometry.geom_type=="Polygon": return [geometry]
     if geometry.geom_type in {"MultiPolygon","GeometryCollection"}: return [p for g in geometry.geoms for p in polygons(g)]
     return []
+

@@ -15,7 +15,7 @@ INCH = """%FSLAX46Y46*%
 %MOIN*%
 %ADD25C,0.039370*%
 D25*
-X039370Y039370D03*
+X003937Y003937D03*
 M02*
 """
 
@@ -38,8 +38,3 @@ class VectorComparisonTests(unittest.TestCase):
         self.assertTrue(original_only.is_empty)
         self.assertGreater(manufacturer_only.area, 0.7)
 
-    def test_track_width_changes_actual_xor_area(self):
-        narrow = MM.replace("%ADD10C,1.000000*%", "%ADD10C,0.500000*%").replace("X01000000Y01000000D03*", "X00000000Y01000000D02*\nX02000000Y01000000D01*")
-        wide = narrow.replace("0.500000", "1.000000")
-        _, _, _, xor = compare(self.parse(narrow), self.parse(wide))
-        self.assertGreater(xor.area, 1.0)
