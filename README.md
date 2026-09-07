@@ -46,6 +46,25 @@ under BSD-3-Clause and is backed by GEOS (LGPL-2.1-or-later).
 python3 -m unittest discover -s tests -v
 ```
 
+### Google Colab
+
+Open this repository in Colab, run the following setup cell, then run the
+upload cell. The upload helper accepts any two filenames/extensions, asks which
+is the original, writes every result into `Gerber_XOR_Comparison/`, displays
+the numerical JSON, and starts the ZIP download.
+
+```python
+!pip -q install shapely matplotlib
+from colab_runner import colab_upload_and_run
+comparison = colab_upload_and_run()
+```
+
+For a normal non-interactive notebook workflow, call `run_comparison()` with
+two paths and optional `dx_mm`, `dy_mm`, and `rotation_deg`. The generated
+`raw_differences.json` records vector Boolean areas, region bounds, tolerance,
+alignment, hashes, and any unsupported feature warnings. It is the source of
+truth; `*.png` files are visualizations only.
+
 ## Thresholding and audit/report stage
 
 This repository provides the **thresholding and audit/report stage** for a Gerber
