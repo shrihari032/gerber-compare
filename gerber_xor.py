@@ -15,12 +15,6 @@ from shapely.geometry import GeometryCollection, LineString, Point, Polygon
 from shapely.ops import unary_union
 
 NM_MM = 0.000001
-APERTURE_ALIASES = {
-    "C": "C", "CIRCLE": "C", "CIRCULAR": "C",
-    "R": "R", "RECTANGLE": "R", "VB_RECTANGLE": "R",
-    "O": "O", "OBROUND": "O", "OBLONG": "O", "OVAL": "O", "VB_OBROUND": "O", "VB_OVAL": "O",
-    "P": "P", "POLYGON": "P",
-}
 
 class GerberError(ValueError): pass
 
@@ -66,7 +60,6 @@ class ParsedGerber:
     arcs: int = 0
     flashes: int = 0
     unsupported_features: list[str] = field(default_factory=list)
-    aperture_aliases: list[dict[str, str]] = field(default_factory=list)
 
 def _tokens(text: str) -> Iterable[str]:
     # Parameters retain percent delimiters; ordinary commands are star delimited.
@@ -77,14 +70,7 @@ def _tokens(text: str) -> Iterable[str]:
 class Parser:
     def parse(self, path: str | Path) -> ParsedGerber:
         result=ParsedGerber(str(path)); text=Path(path).read_text(encoding="utf-8", errors="replace")
-        x=y=0.0; selected=None; operation=2; interpolation=1; polarity="D"; geometry=GeometryCollection(); region=False; contours=[]; contour=[]
-        def apply(new_geometry):
-            """Apply polarity immediately: later dark objects can refill clear areas."""
-            nonlocal geometry
-            try:
-                geometry = geometry.union(new_geometry) if polarity == "D" else geometry.difference(new_geometry)
-            except Exception as exc:
-                raise GerberError(f"Boolean geometry failure while applying {polarity} polarity: {exc}") from exc
+        x=y=0.0; selected=None; operation=2; interpolation=1; polarity="D"; dark=[]; clear=[]; region=False; contours=[]; contour=[]
         for raw in _tokens(text):
             result.command_count += 1
             token=raw.strip()
@@ -98,22 +84,11 @@ class Parser:
                 if body.startswith("MO"):
                     result.units="inch" if body[2:].startswith("IN") else "mm" if body[2:].startswith("MM") else ""; continue
                 if body.startswith("ADD"):
-                    # Some CAM exporters use named templates such as
-                    # VB_RECTANGLE instead of directly naming R/C/O.
-                    m=re.fullmatch(r"ADD(\d+)([A-Za-z_][A-Za-z0-9_]*)(?:,(.*))?",body)
-                    if not m: raise GerberError(f"malformed aperture definition: {body}")
-                    name, parameters=m.group(2).upper(),m.group(3) or ""
-                    kind=APERTURE_ALIASES.get(name)
-                    if kind is None:
-                        result.unsupported_features.append(f"aperture macro {m.group(2)} (D{m.group(1)})")
-                        raise GerberError(f"unsupported aperture macro {m.group(2)} in {body}")
-                    try: vals=[float(v) * (25.4 if result.units=="inch" else 1) for v in re.split(r"[Xx]",parameters) if v]
-                    except ValueError as exc: raise GerberError(f"non-numeric aperture parameter in {body}") from exc
-                    if kind == "P" and len(vals)>=2: vals[1] /= (25.4 if result.units=="inch" else 1)
-                    required={"C":1,"R":2,"O":2,"P":2}[kind]
-                    if len(vals) < required: raise GerberError(f"aperture {body} requires {required} parameter(s)")
-                    if name != kind: result.aperture_aliases.append({"original_aperture_name":m.group(2),"normalized_aperture_type":kind,"aperture_code":f"D{m.group(1)}"})
-                    result.apertures[int(m.group(1))]=Aperture(kind,vals, vals[2] if kind=="P" and len(vals)>2 else 0); continue
+                    m=re.match(r"ADD(\d+)([CROP]),?(.+)?",body)
+                    if not m: raise GerberError(f"unsupported aperture definition: {body}")
+                    vals=[float(v) * (25.4 if result.units=="inch" else 1) for v in re.split(r"[Xx]",m.group(3) or "") if v]
+                    if m.group(2)=="P" and len(vals)>=2: vals[1] /= (25.4 if result.units=="inch" else 1)
+                    result.apertures[int(m.group(1))]=Aperture(m.group(2),vals, vals[2] if m.group(2)=="P" and len(vals)>2 else 0); continue
                 if body.startswith("LP"): polarity=body[2:3]; continue
                 if body.startswith(("TF","TA","TD","TO","AM","LM","LR","LS")):
                     if body.startswith("AM"): result.unsupported_features.append("aperture macro")
@@ -124,14 +99,7 @@ class Parser:
             if "G37" in token:
                 if contour: contours.append(contour)
                 if not contours: raise GerberError("empty region")
-                # Gerber region contours are filled according to their nesting.
-                # Symmetric difference gives an even/odd fill and correctly makes
-                # an inner contour a hole without relying on winding direction.
-                geom=GeometryCollection()
-                for points in contours:
-                    if len(points) < 3: raise GerberError("region contour has fewer than three points")
-                    geom=geom.symmetric_difference(Polygon(points))
-                apply(geom); result.regions+=1; region=False; continue
+                geom=unary_union([Polygon(c) for c in contours if len(c)>=3]); (dark if polarity=="D" else clear).append(geom); result.regions+=1; region=False; continue
             g=re.search(r"G0?([123])",token)
             if g: interpolation=int(g.group(1))
             d=re.search(r"D0?([123])",token)
@@ -151,10 +119,9 @@ class Parser:
                 if not im or not jm: raise GerberError("arc missing I/J")
                 cx=x+self._coord(im,0,result); cy=y+self._coord(jm,0,result); geom=self._arc((x,y),(nx,ny),(cx,cy),interpolation==3,ap); result.arcs+=1
             else: geom=ap.stroke((x,y),(nx,ny))
-            apply(geom); x,y=nx,ny
+            (dark if polarity=="D" else clear).append(geom); x,y=nx,ny
         if not result.format or not result.units: raise GerberError("not an RS-274X Gerber: missing FS or MO")
-        if region: raise GerberError("unterminated G36 region")
-        result.geometry=self._snap(geometry)
+        result.geometry=self._snap(unary_union(dark).difference(unary_union(clear)))
         return result
 
     def _coord(self,m, previous, r):
@@ -186,3 +153,4 @@ def polygons(geometry):
     if geometry.geom_type=="Polygon": return [geometry]
     if geometry.geom_type in {"MultiPolygon","GeometryCollection"}: return [p for g in geometry.geoms for p in polygons(g)]
     return []
+
