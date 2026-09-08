@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+comparison_output/
+Gerber_XOR_Comparison/
+dist/
+build/
+*.spec
