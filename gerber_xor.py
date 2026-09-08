@@ -8,31 +8,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math, re
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Iterable
 
 from shapely.affinity import rotate, translate
 from shapely.geometry import GeometryCollection, LineString, Point, Polygon
 from shapely.ops import unary_union
 
 NM_MM = 0.000001
-STANDARD_APERTURES = {"C": "C", "R": "R", "O": "O", "P": "P"}
-_APERTURE_PROVIDERS: list[tuple[re.Pattern, Callable[[str], str | None]]] = []
-
-def register_aperture_provider(pattern: str, provider: Callable[[str], str | None]) -> None:
-    """Register a vendor resolver without changing the Gerber parser."""
-    _APERTURE_PROVIDERS.append((re.compile(pattern, re.I), provider))
-
-class ApertureGeometryResolver:
-    """Resolve standard, registered, or unambiguously semantic aperture names."""
-    semantic = ((r"(?:^|_)(?:CIRCLE|CIRCULAR|ROUND)$", "C"), (r"(?:^|_)(?:RECTANGLE|RECTANGULAR|RECT)$", "R"), (r"(?:^|_)(?:OBROUND|OBLONG|OVAL)$", "O"), (r"(?:^|_)(?:POLYGON)$", "P"))
-    def resolve(self, name: str) -> tuple[str | None, str]:
-        upper=name.upper()
-        if upper in STANDARD_APERTURES: return upper, "standard"
-        for pattern, provider in _APERTURE_PROVIDERS:
-            if pattern.fullmatch(name): return provider(name), "provider"
-        for pattern, kind in self.semantic:
-            if re.search(pattern, upper): return kind, "semantic"
-        return None, "unresolved"
 
 class GerberError(ValueError): pass
 
@@ -41,11 +23,6 @@ class Aperture:
     kind: str
     values: list[float]
     rotation: float = 0.0
-    number: int = 0
-    name: str = ""
-    raw_definition: str = ""
-    geometry_type: str | None = None
-    resolver: str = "standard"
 
     def shape(self, x: float, y: float):
         if self.kind == "C": return Point(x, y).buffer(self.values[0] / 2, quad_segs=32)
@@ -60,7 +37,7 @@ class Aperture:
             diameter, vertices = self.values[:2]
             pts=[(x+diameter/2*math.cos(math.radians(self.rotation+90+i*360/vertices)), y+diameter/2*math.sin(math.radians(self.rotation+90+i*360/vertices))) for i in range(int(vertices))]
             return Polygon(pts)
-        raise GerberError(f"Unsupported aperture geometry\nAperture: D{self.number}\nName: {self.name}\nParameters: {self.values}\nDefinition: {self.raw_definition}\nNo geometry resolver is currently available for this aperture.")
+        raise GerberError(f"unsupported aperture {self.kind}")
 
     def stroke(self, start: tuple[float,float], end: tuple[float,float]):
         if self.kind == "C": return LineString([start,end]).buffer(self.values[0]/2, cap_style=1, quad_segs=32)
@@ -68,7 +45,7 @@ class Aperture:
         # plus the swept bounding envelope is exact for R/O only when axis-aligned.
         # Preserve safety rather than claiming unsupported sweeps are exact.
         if self.kind in {"R", "O", "P"}: return unary_union([self.shape(*start), self.shape(*end), LineString([start,end]).buffer(max(self.values[:2])/2, cap_style=3)])
-        raise GerberError(f"Unsupported aperture geometry for stroke: D{self.number} ({self.name})")
+        raise GerberError(f"unsupported stroke aperture {self.kind}")
 
 @dataclass
 class ParsedGerber:
@@ -83,10 +60,6 @@ class ParsedGerber:
     arcs: int = 0
     flashes: int = 0
     unsupported_features: list[str] = field(default_factory=list)
-    aperture_aliases: list[dict[str, str]] = field(default_factory=list)
-
-    def aperture_diagnostics(self):
-        return [{"number":a.number,"name":a.name,"parameters":a.values,"raw_definition":a.raw_definition,"geometry_type":a.geometry_type,"resolver":a.resolver} for a in self.apertures.values()]
 
 def _tokens(text: str) -> Iterable[str]:
     # Parameters retain percent delimiters; ordinary commands are star delimited.
@@ -95,17 +68,9 @@ def _tokens(text: str) -> Iterable[str]:
         if token: yield token.strip("*")
 
 class Parser:
-    def __init__(self, aperture_resolver: ApertureGeometryResolver | None = None): self.aperture_resolver=aperture_resolver or ApertureGeometryResolver()
     def parse(self, path: str | Path) -> ParsedGerber:
         result=ParsedGerber(str(path)); text=Path(path).read_text(encoding="utf-8", errors="replace")
-        x=y=0.0; selected=None; operation=2; interpolation=1; polarity="D"; geometry=GeometryCollection(); region=False; contours=[]; contour=[]
-        def apply(new_geometry):
-            """Apply polarity immediately: later dark objects can refill clear areas."""
-            nonlocal geometry
-            try:
-                geometry = geometry.union(new_geometry) if polarity == "D" else geometry.difference(new_geometry)
-            except Exception as exc:
-                raise GerberError(f"Boolean geometry failure while applying {polarity} polarity: {exc}") from exc
+        x=y=0.0; selected=None; operation=2; interpolation=1; polarity="D"; dark=[]; clear=[]; region=False; contours=[]; contour=[]
         for raw in _tokens(text):
             result.command_count += 1
             token=raw.strip()
@@ -119,21 +84,11 @@ class Parser:
                 if body.startswith("MO"):
                     result.units="inch" if body[2:].startswith("IN") else "mm" if body[2:].startswith("MM") else ""; continue
                 if body.startswith("ADD"):
-                    # Some CAM exporters use named templates such as
-                    # VB_RECTANGLE instead of directly naming R/C/O.
-                    m=re.fullmatch(r"ADD(\d+)([A-Za-z_][A-Za-z0-9_]*)(?:,(.*))?",body)
-                    if not m: raise GerberError(f"malformed aperture definition: {body}")
-                    raw_name, name, parameters=m.group(2),m.group(2).upper(),m.group(3) or ""
-                    kind, resolver=self.aperture_resolver.resolve(raw_name)
-                    try: vals=[float(v) * (25.4 if result.units=="inch" else 1) for v in re.split(r"[Xx]",parameters) if v]
-                    except ValueError as exc: raise GerberError(f"non-numeric aperture parameter in {body}") from exc
-                    if kind == "P" and len(vals)>=2: vals[1] /= (25.4 if result.units=="inch" else 1)
-                    if kind is not None:
-                        required={"C":1,"R":2,"O":2,"P":2}[kind]
-                        if len(vals) < required: raise GerberError(f"invalid parameter count: {raw_name} requires {required} parameter(s)")
-                        if name != kind: result.aperture_aliases.append({"original_aperture_name":raw_name,"normalized_aperture_type":kind,"aperture_code":f"D{m.group(1)}","resolver":resolver})
-                    else: result.unsupported_features.append(f"unresolved aperture D{m.group(1)} {raw_name}")
-                    result.apertures[int(m.group(1))]=Aperture(kind or "UNRESOLVED",vals, vals[2] if kind=="P" and len(vals)>2 else 0,int(m.group(1)),raw_name,body,kind,resolver); continue
+                    m=re.match(r"ADD(\d+)([CROP]),?(.+)?",body)
+                    if not m: raise GerberError(f"unsupported aperture definition: {body}")
+                    vals=[float(v) * (25.4 if result.units=="inch" else 1) for v in re.split(r"[Xx]",m.group(3) or "") if v]
+                    if m.group(2)=="P" and len(vals)>=2: vals[1] /= (25.4 if result.units=="inch" else 1)
+                    result.apertures[int(m.group(1))]=Aperture(m.group(2),vals, vals[2] if m.group(2)=="P" and len(vals)>2 else 0); continue
                 if body.startswith("LP"): polarity=body[2:3]; continue
                 if body.startswith(("TF","TA","TD","TO","AM","LM","LR","LS")):
                     if body.startswith("AM"): result.unsupported_features.append("aperture macro")
@@ -144,14 +99,7 @@ class Parser:
             if "G37" in token:
                 if contour: contours.append(contour)
                 if not contours: raise GerberError("empty region")
-                # Gerber region contours are filled according to their nesting.
-                # Symmetric difference gives an even/odd fill and correctly makes
-                # an inner contour a hole without relying on winding direction.
-                geom=GeometryCollection()
-                for points in contours:
-                    if len(points) < 3: raise GerberError("region contour has fewer than three points")
-                    geom=geom.symmetric_difference(Polygon(points))
-                apply(geom); result.regions+=1; region=False; continue
+                geom=unary_union([Polygon(c) for c in contours if len(c)>=3]); (dark if polarity=="D" else clear).append(geom); result.regions+=1; region=False; continue
             g=re.search(r"G0?([123])",token)
             if g: interpolation=int(g.group(1))
             d=re.search(r"D0?([123])",token)
@@ -171,10 +119,9 @@ class Parser:
                 if not im or not jm: raise GerberError("arc missing I/J")
                 cx=x+self._coord(im,0,result); cy=y+self._coord(jm,0,result); geom=self._arc((x,y),(nx,ny),(cx,cy),interpolation==3,ap); result.arcs+=1
             else: geom=ap.stroke((x,y),(nx,ny))
-            apply(geom); x,y=nx,ny
+            (dark if polarity=="D" else clear).append(geom); x,y=nx,ny
         if not result.format or not result.units: raise GerberError("not an RS-274X Gerber: missing FS or MO")
-        if region: raise GerberError("unterminated G36 region")
-        result.geometry=self._snap(geometry)
+        result.geometry=self._snap(unary_union(dark).difference(unary_union(clear)))
         return result
 
     def _coord(self,m, previous, r):
@@ -206,3 +153,4 @@ def polygons(geometry):
     if geometry.geom_type=="Polygon": return [geometry]
     if geometry.geom_type in {"MultiPolygon","GeometryCollection"}: return [p for g in geometry.geoms for p in polygons(g)]
     return []
+
